@@ -1,0 +1,6 @@
+{
+  "name": "AudioToSRT - AI Audio Subtitle Generator & Sync Editor",
+  "description": "Generate time-accurate SRT subtitle files from audio in Gujarati, Hindi, English, Hinglish, and Gujlish with synchronized editing and export dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
