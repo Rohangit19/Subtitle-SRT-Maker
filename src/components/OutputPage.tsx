@@ -33,7 +33,6 @@ export const OutputPage: React.FC<OutputPageProps> = ({
   const [colorCode, setColorCode] = useState<string>('#FFD700'); // Clean color code
   const [isColoringActive, setIsColoringActive] = useState<boolean>(true); // Integrated coloring toggle
   const [coloredWords, setColoredWords] = useState<Record<string, string>>({}); // { "cueId-wordIdx": "#FFD700" }
-  const [includeTagsInDownload, setIncludeTagsInDownload] = useState<boolean>(false); // Clean SRT by default
 
   const baseFileName = audioName.replace(/\.[^/.]+$/, '') || 'subtitles';
   const downloadFileName = `${baseFileName}_${targetLanguage}.srt`;
@@ -68,30 +67,24 @@ export const OutputPage: React.FC<OutputPageProps> = ({
     });
   };
 
-  // Generate SRT content (Clean by default, with no extra color tags cluttering the SRT)
+  // Generate SRT content: Automatically includes color tags for any marked words
   const currentSrtContent = useMemo(() => {
     return cleanCues
       .map((cue, index) => {
         const id = index + 1;
         const words = cue.text.split(/\s+/).filter(Boolean);
 
-        let line = '';
-        if (includeTagsInDownload) {
-          line = words
-            .map((w, wIdx) => {
-              const color = coloredWords[`${cue.id}-${wIdx}`];
-              return color ? `<font color="${color}">${w}</font>` : w;
-            })
-            .join(' ');
-        } else {
-          // Pure clean SRT text without extra color codes
-          line = words.join(' ');
-        }
+        const line = words
+          .map((w, wIdx) => {
+            const color = coloredWords[`${cue.id}-${wIdx}`];
+            return color ? `<font color="${color}">${w}</font>` : w;
+          })
+          .join(' ');
 
         return `${id}\n${cue.startTime} --> ${cue.endTime}\n${line}\n`;
       })
       .join('\n');
-  }, [cleanCues, coloredWords, includeTagsInDownload]);
+  }, [cleanCues, coloredWords]);
 
   // Download .SRT file
   const handleDownload = () => {
@@ -269,30 +262,12 @@ export const OutputPage: React.FC<OutputPageProps> = ({
             );
           })}
         </div>
-
-        {/* Optional Checkbox in footer for users who specifically want <font> tags in exported file */}
-        <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50/90 px-4 py-2 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-850">
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={includeTagsInDownload}
-              onChange={(e) => setIncludeTagsInDownload(e.target.checked)}
-              className="rounded border-slate-300 text-blue-600 focus:ring-0"
-            />
-            <span>Include &lt;font&gt; color tags in exported .SRT file</span>
-          </label>
-          <span className="text-[11px] text-slate-400">
-            {includeTagsInDownload
-              ? 'Tags included for video editors'
-              : 'Clean text (No extra tags in SRT)'}
-          </span>
-        </div>
       </div>
 
       {/* Bottom Download CTA */}
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
         <span>
-          👉 Click any word to color it • Click again to Undo • Pure text without extra code.
+          👉 Click any word to color it • Click again to Undo • Color tags are automatically included in the downloaded SRT.
         </span>
         <button
           type="button"
