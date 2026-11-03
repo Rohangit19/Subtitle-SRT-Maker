@@ -68,10 +68,36 @@ export const AudioUploadSection: React.FC<AudioUploadSectionProps> = ({
     }
   };
 
-  const handleUseSample = (lang: SupportedLanguage) => {
+  const handleUseSample = async (lang: SupportedLanguage) => {
     const preset = SAMPLE_PRESETS.find((p) => p.language === lang) || SAMPLE_PRESETS[0];
-    const syntheticBlob = generateSyntheticWavBlob(preset.durationSec);
     onChangeLanguage(preset.language);
+
+    try {
+      const res = await fetch(`/api/sample-speech?lang=${preset.language}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audioBase64) {
+          const byteCharacters = atob(data.audioBase64);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const speechBlob = new Blob([byteArray], { type: 'audio/wav' });
+
+          onAudioReady(
+            speechBlob,
+            `${preset.title.replace(/\s+/g, '_')}_speech.wav`,
+            'audio/wav'
+          );
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('Could not load speech sample from server, using synthetic fallback:', e);
+    }
+
+    const syntheticBlob = generateSyntheticWavBlob(preset.durationSec);
     onAudioReady(
       syntheticBlob,
       `${preset.title.replace(/\s+/g, '_')}.wav`,

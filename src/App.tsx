@@ -9,7 +9,7 @@ import { HomePage } from './components/HomePage';
 import { AudioUploadSection } from './components/AudioUploadSection';
 import { OutputPage } from './components/OutputPage';
 import { SupportedLanguage, SubtitleCue } from './types/subtitle';
-import { cuesToSrt, msToSrtTime, enforceStrict4to5Words } from './utils/srtUtils';
+import { cuesToSrt, msToSrtTime, enforceStrict4to5Words, normalizeEnglishWords } from './utils/srtUtils';
 import { blobToBase64 } from './utils/audioGenerator';
 import { AlertCircle } from 'lucide-react';
 
@@ -65,10 +65,11 @@ export default function App() {
         endMs: c.endMs,
         startTime: msToSrtTime(c.startMs),
         endTime: msToSrtTime(c.endMs),
-        text: c.text,
+        text: normalizeEnglishWords(c.text),
       }));
-      setCues(formatted);
-      setSrtText(cuesToSrt(formatted));
+      const strictlyEnforced = enforceStrict4to5Words(formatted);
+      setCues(strictlyEnforced);
+      setSrtText(cuesToSrt(strictlyEnforced));
     }
   };
 
@@ -99,14 +100,26 @@ export default function App() {
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Error status ${response.status}`);
+      const responseText = await response.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        if (responseText.includes('<!doctype') || responseText.includes('<html')) {
+          throw new Error('Server connection was interrupted or is warming up. Please try generating again.');
+        }
+        throw new Error('Invalid response received from transcription server.');
       }
 
-      const data = await response.json();
+      if (!response.ok) {
+        if (response.status === 429 || data?.error?.includes('Quota') || data?.error?.includes('429')) {
+          throw new Error('Gemini API daily limit reached on Free Tier. Please wait a bit or use a billing-enabled key in Settings > Secrets.');
+        }
+        throw new Error(data?.error || `Transcription error (status ${response.status})`);
+      }
+
       if (!data.subtitles || data.subtitles.length === 0) {
-        throw new Error('No subtitles could be generated from the audio.');
+        throw new Error('No speech detected in this audio file. Please try another audio recording.');
       }
 
       const strictlyEnforced = enforceStrict4to5Words(data.subtitles);

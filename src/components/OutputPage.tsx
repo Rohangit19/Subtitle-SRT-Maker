@@ -9,7 +9,7 @@ import {
   MousePointerClick,
 } from 'lucide-react';
 import { SubtitleCue } from '../types/subtitle';
-import { cuesToSrt } from '../utils/srtUtils';
+import { cuesToSrt, normalizeEnglishWords } from '../utils/srtUtils';
 
 interface OutputPageProps {
   cues: SubtitleCue[];
@@ -37,12 +37,12 @@ export const OutputPage: React.FC<OutputPageProps> = ({
   const baseFileName = audioName.replace(/\.[^/.]+$/, '') || 'subtitles';
   const downloadFileName = `${baseFileName}_${targetLanguage}.srt`;
 
-  // Clean cues text (strips any stray <font> tags)
+  // Clean cues text (strips any stray <font> tags and guarantees English words stay in standard English)
   const cleanCues = useMemo(() => {
     return cues.map((cue, idx) => ({
       ...cue,
       id: idx + 1,
-      text: cue.text.replace(/<\/?font[^>]*>/gi, '').trim(),
+      text: normalizeEnglishWords(cue.text.replace(/<\/?font[^>]*>/gi, '').trim()),
     }));
   }, [cues]);
 
