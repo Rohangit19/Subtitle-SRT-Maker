@@ -7,6 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { HomePage } from './components/HomePage';
 import { AudioUploadSection } from './components/AudioUploadSection';
+import { ProcessingPage } from './components/ProcessingPage';
 import { OutputPage } from './components/OutputPage';
 import { SupportedLanguage, SubtitleCue } from './types/subtitle';
 import { cuesToSrt, msToSrtTime, enforceStrict4to5Words, normalizeEnglishWords } from './utils/srtUtils';
@@ -14,7 +15,7 @@ import { blobToBase64 } from './utils/audioGenerator';
 import { AlertCircle } from 'lucide-react';
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<'home' | 'upload' | 'output'>('home');
+  const [currentPage, setCurrentPage] = useState<'home' | 'upload' | 'processing' | 'output'>('home');
 
   // Audio state
   const [audioBlob, setAudioBlob] = useState<Blob | undefined>(undefined);
@@ -82,11 +83,13 @@ export default function App() {
 
     setIsTranscribing(true);
     setErrorMsg(null);
-    setTranscriptionStatus('Uploading audio...');
+    setTranscriptionStatus('Listening to audio waveforms...');
+    // Immediately navigate to the intermediate entertaining progress page!
+    setCurrentPage('processing');
 
     try {
       const base64Data = await blobToBase64(audioBlob);
-      setTranscriptionStatus(`Transcribing in ${selectedLanguage.toUpperCase()}...`);
+      setTranscriptionStatus(`Transcribing speech in ${selectedLanguage.toUpperCase()}...`);
 
       const response = await fetch('/api/transcribe', {
         method: 'POST',
@@ -100,6 +103,8 @@ export default function App() {
         }),
       });
 
+      setTranscriptionStatus('Enforcing Native English Spelling & timing calibration...');
+
       const responseText = await response.text();
       let data: any = {};
       try {
@@ -112,8 +117,11 @@ export default function App() {
       }
 
       if (!response.ok) {
+        if (response.status === 503 || data?.error?.includes('503') || data?.error?.includes('high demand') || data?.error?.includes('UNAVAILABLE')) {
+          throw new Error('Gemini 3.8 Flash is currently experiencing temporary high demand (503 Service Unavailable). Please click "Try Again" below to retry.');
+        }
         if (response.status === 429 || data?.error?.includes('Quota') || data?.error?.includes('429')) {
-          throw new Error('Gemini API daily limit reached on Free Tier. Please wait a bit or use a billing-enabled key in Settings > Secrets.');
+          throw new Error('Gemini API daily limit or rate limit reached on Free Tier. Please wait a bit or use a billing-enabled key in Settings > Secrets.');
         }
         throw new Error(data?.error || `Transcription error (status ${response.status})`);
       }
@@ -122,19 +130,23 @@ export default function App() {
         throw new Error('No speech detected in this audio file. Please try another audio recording.');
       }
 
+      setTranscriptionStatus('Polishing Notepad preview and subtitle cues...');
+
       const strictlyEnforced = enforceStrict4to5Words(data.subtitles);
       setCues(strictlyEnforced);
       const generatedSrt = cuesToSrt(strictlyEnforced);
       setSrtText(generatedSrt);
 
-      // Transition to Page 3 (Notepad Output)
-      setCurrentPage('output');
+      // Brief joyful completion pause so the entertaining progress bar hits 100%
+      setTimeout(() => {
+        setIsTranscribing(false);
+        setTranscriptionStatus('');
+        setCurrentPage('output');
+      }, 500);
     } catch (err: any) {
       console.error('Transcription failed:', err);
-      setErrorMsg(err.message || 'Failed to generate subtitles. Please try again.');
-    } finally {
       setIsTranscribing(false);
-      setTranscriptionStatus('');
+      setErrorMsg(err.message || 'Failed to generate subtitles. Please try again.');
     }
   };
 
@@ -144,6 +156,8 @@ export default function App() {
     setCues([]);
     setSrtText('');
     setErrorMsg(null);
+    setIsTranscribing(false);
+    setTranscriptionStatus('');
     setCurrentPage('home');
   };
 
@@ -153,8 +167,8 @@ export default function App() {
       <Header onNavigateHome={() => setCurrentPage('home')} serverReady={serverReady} />
 
       <main>
-        {/* Error Notification */}
-        {errorMsg && (
+        {/* Error Notification on Home or Upload page */}
+        {errorMsg && currentPage !== 'processing' && (
           <div className="mx-auto max-w-xl px-4 pt-4">
             <div className="flex items-center justify-between rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
               <div className="flex items-center gap-2">
@@ -189,6 +203,22 @@ export default function App() {
             hasAudioLoaded={Boolean(audioBlob)}
             currentAudioName={audioName}
             onBackToHome={() => setCurrentPage('home')}
+          />
+        )}
+
+        {/* Intermediate Page (Between 2 and 3): Interactive & Entertaining Progress Bar */}
+        {currentPage === 'processing' && (
+          <ProcessingPage
+            fileName={audioName || 'audio_file.wav'}
+            selectedLanguage={selectedLanguage}
+            statusMessage={transcriptionStatus}
+            isTranscribing={isTranscribing}
+            errorMsg={errorMsg}
+            onCancel={() => {
+              setIsTranscribing(false);
+              setCurrentPage('upload');
+            }}
+            onRetry={handleGenerateSubtitles}
           />
         )}
 
