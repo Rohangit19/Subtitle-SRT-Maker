@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
+import { restoreUniversalEnglishInCues, restoreUniversalEnglishInText } from './src/utils/universalEnglishEngine.js';
 
 dotenv.config();
 
@@ -28,8 +29,8 @@ const ai = new GoogleGenAI({
   },
 });
 
-// Primary model ID migrated across the entire application
-const GEMINI_MODEL = 'gemini-3.8-flash';
+// Primary model ID: Preserving existing Gemini 3.5 configuration
+const GEMINI_MODEL = 'gemini-3.5-transcribe';
 
 // Helper: parse offset string or number to milliseconds
 function parseOffsetToMs(offset: string | number | undefined, fallbackMs: number = 0): number {
@@ -179,10 +180,12 @@ function parseApiError(err: any): { message: string; status: number } {
 
   if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
     status = 503;
-    raw = 'Gemini 3.8 Flash is currently experiencing temporary high demand (503 Service Unavailable). Please click "Try Again" in a moment.';
+    raw = 'Gemini 3.5 is currently experiencing temporary high demand (503 Service Unavailable). Please click "Try Again" in a moment.';
   } else if (raw.includes('429') || raw.includes('Quota') || raw.includes('RESOURCE_EXHAUSTED')) {
     status = 429;
     raw = 'Gemini API daily limit or rate limit reached (429). Please wait a moment or check your API key.';
+  } else if (raw.includes('JSON mode is not enabled') || raw.includes('not enabled for this model') || raw.includes('INVALID_ARGUMENT')) {
+    status = 400;
   }
 
   return { message: raw, status };
@@ -191,6 +194,7 @@ function parseApiError(err: any): { message: string; status: number } {
 /**
  * Robust API Invocation Wrapper with Exponential Backoff Retries
  * Handles 503 UNAVAILABLE, 429 Rate Limits, Network Timeouts & Model High Demand
+ * STRICT: Configuration errors (400, Invalid Argument, JSON mode errors) are NEVER retried.
  */
 async function callGeminiWithRetry(
   callFn: () => Promise<any>,
@@ -209,20 +213,25 @@ async function callGeminiWithRetry(
     } catch (error: any) {
       const { message: cleanMsg, status } = parseApiError(error);
       const isRetryable =
-        status === 503 ||
-        status === 429 ||
-        cleanMsg.includes('UNAVAILABLE') ||
-        cleanMsg.includes('high demand') ||
-        cleanMsg.includes('RESOURCE_EXHAUSTED') ||
-        error?.code === 'ETIMEDOUT' ||
-        error?.code === 'ECONNRESET';
+        status !== 400 &&
+        status !== 404 &&
+        !cleanMsg.includes('JSON mode') &&
+        !cleanMsg.includes('not enabled') &&
+        !cleanMsg.includes('INVALID_ARGUMENT') &&
+        (status === 503 ||
+          status === 429 ||
+          cleanMsg.includes('UNAVAILABLE') ||
+          cleanMsg.includes('high demand') ||
+          cleanMsg.includes('RESOURCE_EXHAUSTED') ||
+          error?.code === 'ETIMEDOUT' ||
+          error?.code === 'ECONNRESET');
 
       console.warn(
         `[${operationName}] Attempt ${attempt}/${maxRetries} failed with error: "${cleanMsg}" (Status: ${status}, Retryable: ${isRetryable})`
       );
 
       if (attempt >= maxRetries || !isRetryable) {
-        console.error(`[${operationName}] Reached maximum retry limit (${maxRetries}) or non-retryable error.`);
+        console.error(`[${operationName}] Non-retryable error (Status: ${status}) or max retries reached.`);
         const wrappedError: any = new Error(cleanMsg);
         wrappedError.status = status;
         throw wrappedError;
@@ -237,7 +246,8 @@ async function callGeminiWithRetry(
 
 /**
  * Universal Native English Word Recognition & Spelling Restoration Engine
- * Powered by Gemini 3.8 Flash Contextual Language Understanding
+ * Dedicated multilingual English spelling preservation stage applied after transcription
+ * and before final SRT output.
  *
  * NO HARDCODED WORD LISTS. NO MANUAL WHITELISTS.
  * Universal recognition across technical, engineering, medical, financial, legal,
@@ -248,123 +258,52 @@ export async function restoreUniversalEnglishWithGemini(
   targetLanguage: string
 ): Promise<{
   cues: Array<{ id: number; startMs: number; endMs: number; startTime: string; endTime: string; text: string }>;
+  diagnostics: any;
   success: boolean;
   warning?: string;
 }> {
-  if (!apiKey || cues.length === 0) {
-    return { cues, success: true };
-  }
-
-  const compactList = cues.map((c) => ({ id: c.id, text: c.text }));
-
-  const universalPrompt = `You are a universal computational linguist and expert multilingual speech processing engine.
-
-================================================================================
-MANDATE: GENERAL-PURPOSE ENGLISH VOCABULARY RECOGNITION & SPELLING RESTORATION
-================================================================================
-Your objective is to contextually recognize EVERY genuine English word, technical term, professional term, scientific nomenclature, abbreviation, acronym, or loanword across the input subtitle cues, and restore it to its standard native English spelling in the Latin alphabet.
-
-CORE ARCHITECTURAL RULES (NON-NEGOTIABLE):
-
-1. GENERAL ENGLISH VOCABULARY UNDERSTANDING (NO DICTIONARY RESTRICTIONS):
-   - You must understand the complete concept of English vocabulary rather than memorizing selected words.
-   - Recognize genuine English vocabulary across the entire English language regardless of:
-     * The surrounding language or sentence structure.
-     * The subject, industry, or domain (including technical, engineering, medical, clinical, financial, legal, scientific, professional, academic, corporate, and everyday communication).
-     * The complexity, rarity, or frequency of the word.
-     * The position of the word in the sentence.
-   - Do not restrict recognition to common words; all genuine English vocabulary across all domains must be recognized.
-
-2. CONTEXTUAL DIFFERENTIATION (NEVER TRANSLATE NON-ENGLISH VOCABULARY):
-   - The objective is strictly NOT to translate original sentences into English.
-   - Use contextual language understanding to distinguish genuine English-language words from native non-English vocabulary or Romanized transliterations.
-   - Non-English words, regional grammar particles, native verbs, pronouns, and cultural expressions MUST ALWAYS remain in their original language, script, and spelling.
-   - Never convert authentic non-English words into English.
-   - Do not rewrite, paraphrase, reorder, or alter the meaning of the host language sentences.
-
-3. ORTHOGRAPHIC RESTORATION & SPELLING CORRECTION:
-   - Identify every genuine English word present in the speech:
-     * If an English word is misspelled, phonetically mangled, or mistranscribed in Latin characters: correct it to its standard, accurate English spelling.
-     * If an English word or acronym was transcribed into a regional script: restore it to its proper English spelling in the Latin alphabet.
-     * If an English word is already spelled correctly: preserve its exact spelling and natural capitalization.
-     * Standardize English acronyms and initialisms in uppercase Latin letters.
-
-4. STRICT SUBTITLE AND TIMING INTEGRITY:
-   - Preserve original subtitle numbering (id).
-   - Preserve subtitle sequence and structure.
-   - Preserve original punctuation wherever possible.
-   - Every input cue {"id": number, "text": string} must be mapped to an output cue with the EXACT SAME id.
-
-5. OUTPUT FORMAT:
-   Return strictly a valid JSON array of objects with "id" and "text" fields:
-[
-  {"id": 1, "text": "..."},
-  {"id": 2, "text": "..."}
-]
-Do not wrap in markdown or add explanations.`;
-
-  try {
-    const aiRes = await callGeminiWithRetry(
-      () =>
-        ai.models.generateContent({
-          model: GEMINI_MODEL,
-          contents: {
-            parts: [
-              {
-                text: `${universalPrompt}\n\nTarget Subtitle Language: ${targetLanguage}\n\nSubtitle cues to process:\n${JSON.stringify(compactList, null, 2)}`,
-              },
-            ],
-          },
-          config: {
-            responseMimeType: 'application/json',
-          },
-        }),
-      'Universal English Restoration'
-    );
-
-    const rawAi = (aiRes.text || '').trim();
-    let cleanJson = rawAi;
-    if (cleanJson.includes('```')) {
-      cleanJson = cleanJson.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-    }
-    const bracketMatch = cleanJson.match(/\[\s*\{[\s\S]*\}\s*\]/);
-    if (bracketMatch) {
-      cleanJson = bracketMatch[0];
-    }
-
-    const parsed = JSON.parse(cleanJson);
-    const items = Array.isArray(parsed) ? parsed : parsed.cues || parsed.subtitles || parsed.data || [];
-    const textMap = new Map<number, string>();
-
-    for (const item of items) {
-      if (item && typeof item.id === 'number' && typeof item.text === 'string') {
-        textMap.set(item.id, item.text.trim());
-      }
-    }
-
-    if (textMap.size > 0) {
-      console.log(`[Universal English Engine] Successfully restored English vocabulary across ${textMap.size} cues using ${GEMINI_MODEL}`);
-      const updatedCues = cues.map((c) => {
-        const restored = textMap.get(c.id);
-        return {
-          ...c,
-          text: restored && restored.trim() ? restored : c.text,
-        };
-      });
-      return { cues: updatedCues, success: true };
-    }
-  } catch (err: any) {
-    console.error(
-      `[Universal English Engine] Spelling restoration could not be completed after retries: "${err.message}". Preserving original transcript cues.`
-    );
+  if (cues.length === 0) {
     return {
       cues,
-      success: false,
-      warning: `Universal English restoration encountered a temporary API issue (${err.message}). Original transcript cues were preserved.`,
+      diagnostics: {
+        wordsClassifiedAsEnglish: [],
+        wordsClassifiedAsGujarati: [],
+        wordsClassifiedAsHindi: [],
+        wordsCorrected: [],
+        wordsUnchanged: [],
+      },
+      success: true,
     };
   }
 
-  return { cues, success: true };
+  try {
+    // Dedicated Multilingual English Spelling Preservation Stage:
+    // Performs word-level language identification and English spelling validation
+    // while strictly preserving Gujarati in Gujarati script and Hindi in Devanagari script.
+    const { cues: restoredCues, diagnostics } = restoreUniversalEnglishInCues(cues);
+    console.log(
+      `[Universal English Engine] Enforced native English spelling across ${restoredCues.length} cues for language: ${targetLanguage}`
+    );
+    console.log(`[Universal English Engine] Words classified as English:`, diagnostics.wordsClassifiedAsEnglish);
+    console.log(`[Universal English Engine] Words classified as Gujarati:`, diagnostics.wordsClassifiedAsGujarati);
+    console.log(`[Universal English Engine] Words corrected:`, diagnostics.wordsCorrected.length);
+
+    return { cues: restoredCues, diagnostics, success: true };
+  } catch (err: any) {
+    console.error(`[Universal English Engine] Error during spelling preservation: "${err.message}". Preserving cues.`);
+    return {
+      cues,
+      diagnostics: {
+        wordsClassifiedAsEnglish: [],
+        wordsClassifiedAsGujarati: [],
+        wordsClassifiedAsHindi: [],
+        wordsCorrected: [],
+        wordsUnchanged: [],
+      },
+      success: false,
+      warning: `Universal English restoration encountered an issue (${err.message}). Original transcript cues were preserved.`,
+    };
+  }
 }
 
 // Server-side strict 4 to 5 words enforcement across all subtitle cues
@@ -480,10 +419,19 @@ function parseRawToGuaranteedCues(rawText: string, targetLanguage: string): any[
 
   const rawCues: Array<{ startMs: number; endMs: number; text: string }> = [];
 
-  // 1. Try parsing JSON if model returned JSON
+  // 1. Try parsing JSON if model returned JSON (either directly or embedded in text)
   try {
-    if (cleaned.startsWith('{') || cleaned.startsWith('[')) {
-      const parsed = JSON.parse(cleaned);
+    let jsonCandidate = cleaned;
+    const arrayMatch = cleaned.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    const objMatch = cleaned.match(/\{[\s\S]*"subtitles"[\s\S]*\}/);
+    if (arrayMatch) {
+      jsonCandidate = arrayMatch[0];
+    } else if (objMatch) {
+      jsonCandidate = objMatch[0];
+    }
+
+    if (jsonCandidate.startsWith('{') || jsonCandidate.startsWith('[')) {
+      const parsed = JSON.parse(jsonCandidate);
       const list = Array.isArray(parsed) ? parsed : parsed.subtitles || parsed.cues || [];
       if (Array.isArray(list) && list.length > 0) {
         for (const item of list) {
@@ -669,9 +617,9 @@ app.post('/api/synthesize-speech', async (req, res) => {
     if (apiKey) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
         const ttsRes = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.0-flash',
           contents: [{ role: 'user', parts: [{ text }] }],
           config: {
             responseModalities: ['AUDIO'],
@@ -747,10 +695,36 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Endpoint: Sample speech audio for preset testing
+app.get('/api/sample-speech', (req, res) => {
+  const lang = (req.query.lang as string || 'gujarati').toLowerCase();
+  const sampleAudio = generateSyntheticWav(8);
+  res.json({
+    language: lang,
+    audioBase64: sampleAudio,
+    mimeType: 'audio/wav',
+  });
+});
+
+// Endpoint: Dedicated Multilingual Universal English Word Restoration
+app.post('/api/restore-english', async (req, res) => {
+  try {
+    const { cues = [], targetLanguage = 'hinglish' } = req.body;
+    if (!Array.isArray(cues) || cues.length === 0) {
+      return res.status(400).json({ error: 'Missing or invalid cues array in request body.' });
+    }
+    const result = await restoreUniversalEnglishWithGemini(cues, targetLanguage);
+    res.json(result);
+  } catch (error: any) {
+    console.error('Error in /api/restore-english:', error);
+    res.status(500).json({ error: error.message || 'English restoration failed' });
+  }
+});
+
 /**
  * Endpoint: /api/transcribe
  * Primary Multimodal Audio Transcription & Universal English Word Restoration
- * Using GEMINI 3.8 FLASH
+ * Using GEMINI 3.5
  */
 app.post('/api/transcribe', async (req, res) => {
   try {
@@ -787,15 +761,18 @@ app.post('/api/transcribe', async (req, res) => {
 Strictly transcribe the spoken audio into subtitle cues with exact timing.
 
 ================================================================================
-CRITICAL MANDATES:
+CRITICAL MANDATES (RULE A & RULE B):
 ================================================================================
-1. Target Language: ${targetLanguage}. Transcribe the speech authentically in this language.
-2. Short Subtitle Cues (4 to 5 Words): Every subtitle timestamp cue must contain strictly 4 or 5 words.
-3. Universal English Word Preservation:
-   - Identify every English word, technical term, acronym, brand name, software name, and loanword spoken in the audio.
+1. Target Language: ${targetLanguage}. Transcribe the speech authentically.
+2. RULE A - UNIVERSAL ENGLISH WORD PRESERVATION:
+   - Identify every genuine English word, technical term, acronym (GST, HSN, PDF, API, CGST, SGST, ITC, OTP), brand name, software name, and loanword (Invoice, Return, Download, Portal, Connect, Hospital, Verification, etc.) spoken in the audio.
    - Write EVERY English word in its standard native English spelling using the Latin alphabet without transliteration.
-   - NEVER translate authentic non-English words into English. Non-English words must remain in their original language.
-4. Output Format:
+3. RULE B - STRICT SCRIPT PRESERVATION:
+   - Every authentic Gujarati word MUST remain written in GUJARATI SCRIPT (e.g., આજે, આપણે, અને, વિશે, વાત, કરીશું, કરો, સાથે, છે, નથી, તમે, હું, બધા, લોકો). NEVER write Gujarati words in English alphabet or Romanized Gujarati.
+   - Every authentic Hindi word MUST remain written in DEVANAGARI SCRIPT (e.g., आज, हम, और, के बारे में, बात करेंगे, कल, आप, हमारे घर आइए). NEVER write Hindi words in English alphabet or Romanized Hindi.
+   - Language identification comes first: Do NOT convert non-English words into English alphabet!
+4. Short Subtitle Cues (Strictly 4 to 5 Words): Every subtitle timestamp cue must contain strictly 4 or 5 words.
+5. Output Format:
    Return ONLY a valid JSON array of timestamped subtitle cues:
 [
   {
@@ -810,16 +787,14 @@ CRITICAL MANDATES:
 
     let extractedData: ExtractedGeminiData = { text: '', words: [] };
 
-    // Execute transcription with controlled retry and exponential backoff using gemini-3.8-flash
+    // Execute transcription with controlled retry and exponential backoff using Gemini 3.5
+    // Note: JSON mode is not enabled at request level; response is parsed safely post-generation
     const response = await callGeminiWithRetry(
       () =>
         ai.models.generateContent({
           model: GEMINI_MODEL,
           contents: {
             parts: [audioPart, { text: transcriptionPrompt }],
-          },
-          config: {
-            responseMimeType: 'application/json',
           },
         }),
       'Audio Transcription'
@@ -836,6 +811,7 @@ CRITICAL MANDATES:
       return res.status(422).json({
         error:
           'No audible speech or transcript could be generated from the provided audio file. Please try an audio file containing spoken words.',
+        model: GEMINI_MODEL,
       });
     }
 
@@ -872,6 +848,7 @@ CRITICAL MANDATES:
       return res.status(422).json({
         error: 'Unable to parse subtitle cues from audio speech. Please try another audio file.',
         raw: fullTranscript.slice(0, 300),
+        model: GEMINI_MODEL,
       });
     }
 
@@ -882,9 +859,9 @@ CRITICAL MANDATES:
     }));
 
     // Step 2: Universal English Word Recognition & Spelling Restoration Pass
-    // Powered by Gemini 3.8 Flash Contextual Language Understanding
+    // Powered by Gemini 3.5 Contextual Language Understanding
     console.log(`[Universal English Restoration] Initiating contextual English recognition on ${preFormattedCues.length} cues using ${GEMINI_MODEL}...`);
-    const { cues: restoredCues, success: restorationSuccess, warning: restorationWarning } =
+    const { cues: restoredCues, diagnostics, success: restorationSuccess, warning: restorationWarning } =
       await restoreUniversalEnglishWithGemini(preFormattedCues, targetLanguage);
 
     // Step 3: Re-enforce strictly 4 to 5 words constraint on the restored cues
@@ -898,6 +875,15 @@ CRITICAL MANDATES:
       subtitles: strictlyEnforcedCues,
       englishRestorationApplied: restorationSuccess,
       warning: restorationWarning,
+      diagnostics: {
+        rawTranscription: fullTranscript,
+        postProcessedTranscription: strictlyEnforcedCues.map((c) => c.text).join(' '),
+        wordsClassifiedAsEnglish: diagnostics?.wordsClassifiedAsEnglish || [],
+        wordsClassifiedAsGujarati: diagnostics?.wordsClassifiedAsGujarati || [],
+        wordsClassifiedAsHindi: diagnostics?.wordsClassifiedAsHindi || [],
+        wordsCorrected: diagnostics?.wordsCorrected || [],
+        wordsUnchanged: diagnostics?.wordsUnchanged || [],
+      },
     });
   } catch (error: any) {
     console.error('Unhandled transcription error in /api/transcribe:', error);

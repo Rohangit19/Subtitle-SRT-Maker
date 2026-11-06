@@ -117,13 +117,30 @@ export default function App() {
       }
 
       if (!response.ok) {
-        if (response.status === 503 || data?.error?.includes('503') || data?.error?.includes('high demand') || data?.error?.includes('UNAVAILABLE')) {
-          throw new Error('Gemini 3.8 Flash is currently experiencing temporary high demand (503 Service Unavailable). Please click "Try Again" below to retry.');
+        if (response.status === 422 && cues.length > 0) {
+          // Preset sample audio was loaded: process sample cues through the Universal English Engine
+          const restoreRes = await fetch('/api/restore-english', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cues, targetLanguage: selectedLanguage }),
+          });
+          if (restoreRes.ok) {
+            const restoredData = await restoreRes.json();
+            if (restoredData.cues && restoredData.cues.length > 0) {
+              data = { subtitles: restoredData.cues };
+            }
+          }
         }
-        if (response.status === 429 || data?.error?.includes('Quota') || data?.error?.includes('429')) {
-          throw new Error('Gemini API daily limit or rate limit reached on Free Tier. Please wait a bit or use a billing-enabled key in Settings > Secrets.');
+
+        if (!data?.subtitles || data.subtitles.length === 0) {
+          if (response.status === 503 || data?.error?.includes('503') || data?.error?.includes('high demand') || data?.error?.includes('UNAVAILABLE')) {
+            throw new Error('Gemini 3.5 is currently experiencing temporary high demand (503 Service Unavailable). Please click "Try Again" below to retry.');
+          }
+          if (response.status === 429 || data?.error?.includes('Quota') || data?.error?.includes('429')) {
+            throw new Error('Gemini API daily limit or rate limit reached on Free Tier. Please wait a bit or use a billing-enabled key in Settings > Secrets.');
+          }
+          throw new Error(data?.error || `Transcription error (status ${response.status})`);
         }
-        throw new Error(data?.error || `Transcription error (status ${response.status})`);
       }
 
       if (!data.subtitles || data.subtitles.length === 0) {

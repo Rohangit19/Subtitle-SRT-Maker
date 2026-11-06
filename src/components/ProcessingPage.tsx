@@ -25,7 +25,7 @@ interface ProcessingPageProps {
 const FUN_TIPS = [
   '⚡ Strict English Rule Active: Spoken English vocabulary, technical terms, and acronyms are preserved in authentic English spelling!',
   '🎯 4 to 5 Words Rule: Ensuring perfect rhythmic pacing so your audience never gets reading fatigue.',
-  '🎧 Analyzing vocal frequencies, background noise, and speech cadence with Gemini 3.8 Flash...',
+  '🎧 Analyzing vocal frequencies, background noise, and speech cadence with Gemini 3.5...',
   '🔍 AI is contextually verifying all technical terms, brand names, and acronyms across your audio...',
   '💡 Did you know? Keeping native English terms in subtitles boosts viewer engagement and clarity!',
   '🎨 Next up: You can color any word on-the-spot in the interactive Notepad Preview!',

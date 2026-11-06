@@ -71,7 +71,7 @@ export function countWords(text: string): number {
 /**
  * Clean text formatting for subtitle cues
  * General-purpose English word recognition and spelling restoration
- * is handled dynamically by Gemini 3.8 Flash without hardcoded word lists
+ * is handled dynamically by Gemini 3.5 without hardcoded word lists
  */
 export function normalizeEnglishWords(text: string): string {
   if (!text) return '';
